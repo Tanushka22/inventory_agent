@@ -3,13 +3,31 @@ import anthropic
 
 client = anthropic.Anthropic()
 
-inventory: dict[str, int] = {
+INVENTORY_FILE = "inventory.json"
+
+DEFAULT_INVENTORY: dict[str, int] = {
     "apples": 100,
     "bananas": 60,
     "widgets": 25,
     "bolts": 200,
     "springs": 50,
 }
+
+
+def load_inventory() -> dict[str, int]:
+    try:
+        with open(INVENTORY_FILE) as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return dict(DEFAULT_INVENTORY)
+
+
+def save_inventory() -> None:
+    with open(INVENTORY_FILE, "w") as f:
+        json.dump(inventory, f, indent=2)
+
+
+inventory: dict[str, int] = load_inventory()
 
 SYSTEM_PROMPT = """You are an inventory manager for a small business. You help users:
 - Check current stock levels
@@ -126,6 +144,7 @@ def update_stock(product: str, quantity: int) -> dict:
     if quantity <= 0:
         return {"error": "Quantity must be positive."}
     inventory[product] += quantity
+    save_inventory()
     return {"success": True, "product": product, "new_quantity": inventory[product]}
 
 
@@ -138,6 +157,7 @@ def place_order(product: str, quantity: int) -> dict:
     if inventory[product] < quantity:
         return {"error": f"Insufficient stock. Requested: {quantity}, available: {inventory[product]}"}
     inventory[product] -= quantity
+    save_inventory()
     return {"success": True, "product": product, "ordered": quantity, "remaining": inventory[product]}
 
 
@@ -148,6 +168,7 @@ def add_product(product: str, quantity: int) -> dict:
     if quantity < 0:
         return {"error": "Initial quantity cannot be negative."}
     inventory[product] = quantity
+    save_inventory()
     return {"success": True, "product": product, "initial_quantity": quantity}
 
 
@@ -156,6 +177,7 @@ def remove_product(product: str) -> dict:
     if product not in inventory:
         return {"error": f"Product '{product}' not found in inventory."}
     del inventory[product]
+    save_inventory()
     return {"success": True, "product": product, "message": f"'{product}' removed from inventory."}
 
 
