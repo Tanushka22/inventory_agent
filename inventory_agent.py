@@ -16,6 +16,9 @@ SYSTEM_PROMPT = """You are an inventory manager for a small business. You help u
 - Add or restock products
 - Process orders (which reduce stock)
 - Add new products to inventory
+- Remove discontinued products
+- Check which products are running low
+- Place bulk orders across multiple products at once
 
 Always confirm actions taken and warn if stock is running low (under 10 units)."""
 
@@ -65,6 +68,50 @@ tools = [
             "required": ["product", "quantity"],
         },
     },
+    {
+        "name": "remove_product",
+        "description": "Remove a product from inventory entirely.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "product": {"type": "string", "description": "Product name to remove"},
+            },
+            "required": ["product"],
+        },
+    },
+    {
+        "name": "get_low_stock",
+        "description": "Returns all products with stock at or below a given threshold.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "threshold": {"type": "integer", "description": "Stock level at or below which a product is considered low (default: 10)"},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "bulk_order",
+        "description": "Place orders for multiple products at once. Processes each item and reports success or failure per product.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "description": "List of products and quantities to order",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "product": {"type": "string", "description": "Product name"},
+                            "quantity": {"type": "integer", "description": "Number of units to order"},
+                        },
+                        "required": ["product", "quantity"],
+                    },
+                },
+            },
+            "required": ["items"],
+        },
+    },
 ]
 
 
@@ -104,6 +151,27 @@ def add_product(product: str, quantity: int) -> dict:
     return {"success": True, "product": product, "initial_quantity": quantity}
 
 
+def remove_product(product: str) -> dict:
+    product = product.lower()
+    if product not in inventory:
+        return {"error": f"Product '{product}' not found in inventory."}
+    del inventory[product]
+    return {"success": True, "product": product, "message": f"'{product}' removed from inventory."}
+
+
+def get_low_stock(threshold: int = 10) -> dict:
+    low = {p: q for p, q in inventory.items() if q <= threshold}
+    return {"threshold": threshold, "low_stock_items": low}
+
+
+def bulk_order(items: list) -> dict:
+    results = []
+    for item in items:
+        result = place_order(item["product"], item["quantity"])
+        results.append({"product": item["product"], "quantity": item["quantity"], **result})
+    return {"results": results}
+
+
 def execute_tool(name: str, tool_input: dict) -> str:
     if name == "get_inventory":
         result = get_inventory()
@@ -113,6 +181,12 @@ def execute_tool(name: str, tool_input: dict) -> str:
         result = place_order(tool_input["product"], tool_input["quantity"])
     elif name == "add_product":
         result = add_product(tool_input["product"], tool_input["quantity"])
+    elif name == "remove_product":
+        result = remove_product(tool_input["product"])
+    elif name == "get_low_stock":
+        result = get_low_stock(tool_input.get("threshold", 10))
+    elif name == "bulk_order":
+        result = bulk_order(tool_input["items"])
     else:
         result = {"error": f"Unknown tool: {name}"}
     return json.dumps(result)
