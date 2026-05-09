@@ -1,9 +1,12 @@
 import json
+import uuid
+from datetime import datetime
 import anthropic
 
 client = anthropic.Anthropic()
 
 INVENTORY_FILE = "inventory.json"
+ORDERS_FILE = "orders.json"
 
 DEFAULT_INVENTORY: dict[str, int] = {
     "apples": 100,
@@ -29,6 +32,22 @@ def save_inventory() -> None:
 
 inventory: dict[str, int] = load_inventory()
 
+
+def load_orders() -> dict[str, dict]:
+    try:
+        with open(ORDERS_FILE) as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {}
+
+
+def save_orders() -> None:
+    with open(ORDERS_FILE, "w") as f:
+        json.dump(orders, f, indent=2)
+
+
+orders: dict[str, dict] = load_orders()
+
 SYSTEM_PROMPT = """You are an inventory manager for a small business. You help users:
 - Check current stock levels
 - Add or restock products
@@ -37,6 +56,8 @@ SYSTEM_PROMPT = """You are an inventory manager for a small business. You help u
 - Remove discontinued products
 - Check which products are running low
 - Place bulk orders across multiple products at once
+- Track orders with IDs, timestamps, and statuses (pending, fulfilled, cancelled)
+- Look up individual orders or list orders by status
 
 Always confirm actions taken and warn if stock is running low (under 10 units)."""
 
@@ -130,6 +151,40 @@ tools = [
             "required": ["items"],
         },
     },
+    {
+        "name": "get_order",
+        "description": "Look up a specific order by its ID.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "order_id": {"type": "string", "description": "The order ID to look up"},
+            },
+            "required": ["order_id"],
+        },
+    },
+    {
+        "name": "list_orders",
+        "description": "List all orders, optionally filtered by status (pending, fulfilled, cancelled).",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "status": {"type": "string", "description": "Filter by status: pending, fulfilled, or cancelled. Omit to list all."},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "update_order_status",
+        "description": "Update an order's status to fulfilled or cancelled. Cancelling a pending order restores stock.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "order_id": {"type": "string", "description": "The order ID to update"},
+                "status": {"type": "string", "description": "New status: fulfilled or cancelled"},
+            },
+            "required": ["order_id", "status"],
+        },
+    },
 ]
 
 
@@ -158,7 +213,16 @@ def place_order(product: str, quantity: int) -> dict:
         return {"error": f"Insufficient stock. Requested: {quantity}, available: {inventory[product]}"}
     inventory[product] -= quantity
     save_inventory()
-    return {"success": True, "product": product, "ordered": quantity, "remaining": inventory[product]}
+    order_id = uuid.uuid4().hex[:8]
+    orders[order_id] = {
+        "id": order_id,
+        "product": product,
+        "quantity": quantity,
+        "status": "pending",
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+    }
+    save_orders()
+    return {"success": True, "order_id": order_id, "product": product, "ordered": quantity, "remaining": inventory[product]}
 
 
 def add_product(product: str, quantity: int) -> dict:
@@ -186,6 +250,36 @@ def get_low_stock(threshold: int = 10) -> dict:
     return {"threshold": threshold, "low_stock_items": low}
 
 
+def get_order(order_id: str) -> dict:
+    order = orders.get(order_id)
+    if not order:
+        return {"error": f"Order '{order_id}' not found."}
+    return order
+
+
+def list_orders(status: str | None = None) -> dict:
+    result = list(orders.values())
+    if status:
+        result = [o for o in result if o["status"] == status]
+    return {"orders": result, "count": len(result)}
+
+
+def update_order_status(order_id: str, status: str) -> dict:
+    if status not in ("fulfilled", "cancelled"):
+        return {"error": "Status must be 'fulfilled' or 'cancelled'."}
+    order = orders.get(order_id)
+    if not order:
+        return {"error": f"Order '{order_id}' not found."}
+    if order["status"] != "pending":
+        return {"error": f"Order is already {order['status']} and cannot be updated."}
+    if status == "cancelled":
+        inventory[order["product"]] += order["quantity"]
+        save_inventory()
+    order["status"] = status
+    save_orders()
+    return {"success": True, "order_id": order_id, "new_status": status}
+
+
 def bulk_order(items: list) -> dict:
     results = []
     for item in items:
@@ -209,6 +303,12 @@ def execute_tool(name: str, tool_input: dict) -> str:
         result = get_low_stock(tool_input.get("threshold", 10))
     elif name == "bulk_order":
         result = bulk_order(tool_input["items"])
+    elif name == "get_order":
+        result = get_order(tool_input["order_id"])
+    elif name == "list_orders":
+        result = list_orders(tool_input.get("status"))
+    elif name == "update_order_status":
+        result = update_order_status(tool_input["order_id"], tool_input["status"])
     else:
         result = {"error": f"Unknown tool: {name}"}
     return json.dumps(result)
